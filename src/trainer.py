@@ -115,7 +115,7 @@ class Trainer:
                 to_log += self.test_collector.collect(self.agent, epoch, **self.cfg.collection.test.config)
                 to_log += self.eval_agent(epoch)
 
-            if self.cfg.training.should:
+            if self.cfg.training.should and self.cfg.common.do_checkpoint:
                 self.save_checkpoint(epoch, save_agent_only=not self.cfg.common.do_checkpoint)
 
             to_log.append({'duration': (time.time() - start_time) / 3600})
@@ -232,7 +232,8 @@ class Trainer:
         for i, (o, a, r, d) in enumerate(zip(outputs.observations.cpu(), outputs.actions.cpu(), outputs.rewards.cpu(), outputs.ends.long().cpu())):  # Make everything (N, T, ...) instead of (T, N, ...)
             episode = Episode(o, a, r, d, torch.ones_like(d))
             episode_id = (epoch - 1 - self.cfg.training.actor_critic.start_after_epochs) * outputs.observations.size(0) + i
-            self.episode_manager_imagination.save(episode, episode_id, epoch)
+            if self.cfg.common.do_checkpoint:
+                self.episode_manager_imagination.save(episode, episode_id, epoch)
 
             metrics_episode = {k: v for k, v in episode.compute_metrics().__dict__.items()}
             metrics_episode['episode_num'] = episode_id

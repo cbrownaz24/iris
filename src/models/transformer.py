@@ -28,6 +28,9 @@ class TransformerConfig:
     resid_pdrop: float
     attn_pdrop: float
 
+    num_filters: int = 24  # STU: number of Hankel eigenvector filters
+    stu_dim: int = 256     # STU: hidden dimension (independent of embed_dim)
+
     @property
     def max_tokens(self):
         return self.tokens_per_block * self.max_blocks
