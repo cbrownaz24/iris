@@ -1,5 +1,6 @@
 import hydra
 from omegaconf import DictConfig
+import sys
 
 from trainer import Trainer
 
