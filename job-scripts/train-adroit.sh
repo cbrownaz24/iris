@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --constraint=a100
+#SBATCH --constraint=gpu80
 #SBATCH --time=1-00:00:00
 #SBATCH --mail-type=begin,end,fail
 #SBATCH --mail-user=cb4835@princeton.edu
@@ -15,7 +15,7 @@ SEED=${SEED:-0}
 IRIS_DIR=${IRIS_DIR:-$HOME/iris}
 CONDA_ENV="iris"
 
-source ~/miniconda3/etc/profile.d/conda.sh
+source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
 conda activate $CONDA_ENV
 
 export HYDRA_FULL_ERROR=1

@@ -115,7 +115,7 @@ class Trainer:
                 to_log += self.test_collector.collect(self.agent, epoch, **self.cfg.collection.test.config)
                 to_log += self.eval_agent(epoch)
 
-            if self.cfg.training.should:
+            if epoch % 50 == 0 and self.cfg.training.should and self.cfg.common.do_checkpoint:
                 self.save_checkpoint(epoch, save_agent_only=not self.cfg.common.do_checkpoint)
 
             to_log.append({'duration': (time.time() - start_time) / 3600})
