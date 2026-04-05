@@ -93,6 +93,21 @@ class Trainer:
             lr_overrides={"stu": cfg.training.world_model.stu_learning_rate},
             wd_overrides={"stu": cfg.training.world_model.stu_weight_decay},
         )
+        if cfg.training.world_model.lr_scheduler.use:
+            total_steps = cfg.training.world_model.lr_scheduler.total_steps
+            if total_steps is None:
+                total_steps = (cfg.common.epochs - cfg.training.world_model.start_after_epochs) * cfg.training.world_model.steps_per_epoch
+            warmup = torch.optim.lr_scheduler.LinearLR(                                                                                                                               
+                optimizer, start_factor=1e-2, total_iters=cfg.training.world_model.lr_scheduler.warmup_steps
+            )                                                                                                                                                                         
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(                                                                                                                      
+                optimizer, T_max=total_steps - cfg.training.world_model.lr_scheduler.warmup_steps, eta_min=1e-6
+            )                                                                                                                                                                         
+            self.scheduler_world_model = torch.optim.lr_scheduler.SequentialLR(                                                                                                                        
+                optimizer, schedulers=[warmup, cosine], milestones=[cfg.training.world_model.lr_scheduler.warmup_steps]
+            )
+        else:
+            self.scheduler_world_model = None
         self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(), lr=cfg.training.learning_rate)
 
         if cfg.initialization.path_to_checkpoint is not None:
@@ -125,6 +140,9 @@ class Trainer:
             to_log.append({'duration': (time.time() - start_time) / 3600})
             for metrics in to_log:
                 wandb.log({'epoch': epoch, **metrics})
+            
+            if self.scheduler_world_model is not None and epoch > self.cfg.training.world_model.start_after_epochs:
+                self.scheduler_world_model.step()
 
         self.finish()
 

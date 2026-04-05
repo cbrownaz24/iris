@@ -64,10 +64,15 @@ training:
     grad_acc_steps: 1
     max_grad_norm: 10.0
     weight_decay: 0.01
-    stu_learning_rate: 0.01
+    stu_learning_rate: 0.001
     stu_weight_decay: 0.003
     start_after_epochs: 25
     steps_per_epoch: 200
+    lr_scheduler:
+      use: True
+      type: cosine
+      warmup_steps: 1000
+      total_steps: null
   actor_critic:
     batch_num_samples: 64
     grad_acc_steps: 1
