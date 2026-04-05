@@ -2,9 +2,19 @@ _target_: models.TransformerConfig
 tokens_per_block: 17
 max_blocks: 20
 attention: 'causal'
-num_layers: 10
+
+# Mini transformer encoder (within-block spatial attention over 16 obs tokens)
+num_layers: 2
 num_heads: 4
-embed_dim: 256
+embed_dim: 64
+
+# STU backbone (across-block temporal modeling)
+stu_obs_dim: 256
+stu_dim: 320
+num_stu_layers: 3
+num_filters: 16
+
+# Dropout
 embed_pdrop: 0.1
 resid_pdrop: 0.1
 attn_pdrop: 0.1

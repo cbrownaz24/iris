@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=iris-asterix
+#SBATCH --job-name=stu-trans-asterix
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -11,7 +11,7 @@
 
 GAME=${GAME:-AsterixNoFrameskip-v4}
 SEED=${SEED:-0}
-IRIS_DIR=${IRIS_DIR:-$HOME/iris}
+IRIS_DIR=${IRIS_DIR:-$HOME/iris-stu-transformer}
 CONDA_ENV="iris"
 
 source ~/miniconda3/etc/profile.d/conda.sh

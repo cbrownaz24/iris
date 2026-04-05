@@ -64,6 +64,8 @@ training:
     grad_acc_steps: 1
     max_grad_norm: 10.0
     weight_decay: 0.01
+    stu_learning_rate: 0.01
+    stu_weight_decay: 0.003
     start_after_epochs: 25
     steps_per_epoch: 200
   actor_critic:

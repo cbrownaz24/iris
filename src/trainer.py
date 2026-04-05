@@ -88,7 +88,11 @@ class Trainer:
         print(f'{sum(p.numel() for p in self.agent.actor_critic.parameters())} parameters in agent.actor_critic')
 
         self.optimizer_tokenizer = torch.optim.Adam(self.agent.tokenizer.parameters(), lr=cfg.training.learning_rate)
-        self.optimizer_world_model = configure_optimizer(self.agent.world_model, cfg.training.learning_rate, cfg.training.world_model.weight_decay)
+        self.optimizer_world_model = configure_optimizer(
+            self.agent.world_model, cfg.training.learning_rate, cfg.training.world_model.weight_decay,
+            lr_overrides={"stu": cfg.training.world_model.stu_learning_rate},
+            wd_overrides={"stu": cfg.training.world_model.stu_weight_decay},
+        )
         self.optimizer_actor_critic = torch.optim.Adam(self.agent.actor_critic.parameters(), lr=cfg.training.learning_rate)
 
         if cfg.initialization.path_to_checkpoint is not None:

@@ -11,8 +11,22 @@ import torch.nn as nn
 from episode import Episode
 
 
-def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_names):
-    """Credits to https://github.com/karpathy/minGPT"""
+def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_names, lr_overrides=None, wd_overrides=None):
+    """Credits to https://github.com/karpathy/minGPT
+
+    Args:
+        lr_overrides: optional dict mapping module name prefixes to learning rates,
+                      e.g. {"stu": 1e-2}. Parameters whose full name starts with a
+                      prefix get that LR; others use ``learning_rate``.
+        wd_overrides: optional dict mapping module name prefixes to weight decay
+                      values, e.g. {"stu": 0.1}. Only applies to parameters that
+                      would normally be decayed (Linear/Conv weights).
+    """
+    if lr_overrides is None:
+        lr_overrides = {}
+    if wd_overrides is None:
+        wd_overrides = {}
+
     # separate out all parameters to those that will and won't experience regularizing weight decay
     decay = set()
     no_decay = set()
@@ -40,11 +54,33 @@ def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_na
     assert len(inter_params) == 0, f"parameters {str(inter_params)} made it into both decay/no_decay sets!"
     assert len(param_dict.keys() - union_params) == 0, f"parameters {str(param_dict.keys() - union_params)} were not separated into either decay/no_decay set!"
 
-    # create the pytorch optimizer object
+    # Helper: find the LR for a given parameter name
+    def _get_lr(param_name):
+        for prefix, lr in lr_overrides.items():
+            if param_name.startswith(prefix):
+                return lr
+        return learning_rate
+
+    # Helper: find the weight decay for a given parameter name (only for decay-eligible params)
+    def _get_wd(param_name):
+        for prefix, wd in wd_overrides.items():
+            if param_name.startswith(prefix):
+                return wd
+        return weight_decay
+
+    # Group by (weight_decay, learning_rate)
+    groups = {}
+    for pn in param_dict:
+        wd = _get_wd(pn) if pn in decay else 0.0
+        lr = _get_lr(pn)
+        key = (wd, lr)
+        groups.setdefault(key, []).append(pn)
+
     optim_groups = [
-        {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": weight_decay},
-        {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
+        {"params": [param_dict[pn] for pn in sorted(pns)], "weight_decay": wd, "lr": lr}
+        for (wd, lr), pns in groups.items()
     ]
+
     optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate)
     return optimizer
 

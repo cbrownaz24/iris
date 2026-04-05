@@ -18,7 +18,7 @@ class WorldModelEnv:
         self.world_model = world_model.to(self.device).eval()
         self.tokenizer = tokenizer.to(self.device).eval()
 
-        self.keys_values_wm, self.obs_tokens, self._num_observations_tokens = None, None, None
+        self.cache, self.obs_tokens, self._num_observations_tokens = None, None, None
 
         self.env = env
 
@@ -39,48 +39,43 @@ class WorldModelEnv:
         if self.num_observations_tokens is None:
             self._num_observations_tokens = num_observations_tokens
 
-        _ = self.refresh_keys_values_with_initial_obs_tokens(obs_tokens)
+        _ = self.refresh_cache_with_initial_obs_tokens(obs_tokens)
         self.obs_tokens = obs_tokens
 
         return self.decode_obs_tokens()
 
     @torch.no_grad()
-    def refresh_keys_values_with_initial_obs_tokens(self, obs_tokens: torch.LongTensor) -> torch.FloatTensor:
+    def refresh_cache_with_initial_obs_tokens(self, obs_tokens: torch.LongTensor) -> None:
         n, num_observations_tokens = obs_tokens.shape
         assert num_observations_tokens == self.num_observations_tokens
-        self.keys_values_wm = self.world_model.transformer.generate_empty_keys_values(n=n, max_tokens=self.world_model.config.max_tokens)
-        outputs_wm = self.world_model(obs_tokens, past_keys_values=self.keys_values_wm)
-        return outputs_wm.output_sequence  # (B, K, E)
+        self.cache = self.world_model.generate_empty_cache(n=n)
+        self.world_model.encode_and_store_obs(obs_tokens, self.cache)
 
     @torch.no_grad()
     def step(self, action: Union[int, np.ndarray, torch.LongTensor], should_predict_next_obs: bool = True) -> None:
-        assert self.keys_values_wm is not None and self.num_observations_tokens is not None
+        assert self.cache is not None and self.num_observations_tokens is not None
 
-        num_passes = 1 + self.num_observations_tokens if should_predict_next_obs else 1
-
-        output_sequence, obs_tokens = [], []
-
-        if self.keys_values_wm.size + num_passes > self.world_model.config.max_tokens:
-            _ = self.refresh_keys_values_with_initial_obs_tokens(self.obs_tokens)
+        # Capacity check: need room for one more block
+        if self.cache.num_blocks >= self.world_model.config.max_blocks:
+            self.refresh_cache_with_initial_obs_tokens(self.obs_tokens)
 
         token = action.clone().detach() if isinstance(action, torch.Tensor) else torch.tensor(action, dtype=torch.long)
-        token = token.reshape(-1, 1).to(self.device)  # (B, 1)
+        token = token.reshape(-1).to(self.device)  # (B,)
 
-        for k in range(num_passes):  # assumption that there is only one action token.
+        # One step: pair pending obs encoding with action, run STU, get predictions
+        outputs_wm = self.world_model.generate_step(token, self.cache)
 
-            outputs_wm = self.world_model(token, past_keys_values=self.keys_values_wm)
-            output_sequence.append(outputs_wm.output_sequence)
+        # Sample reward and done from the block-level predictions
+        reward = Categorical(logits=outputs_wm.logits_rewards.squeeze(1)).sample().float().cpu().numpy().reshape(-1) - 1   # (B,)
+        done = Categorical(logits=outputs_wm.logits_ends.squeeze(1)).sample().cpu().numpy().astype(bool).reshape(-1)       # (B,)
 
-            if k == 0:
-                reward = Categorical(logits=outputs_wm.logits_rewards).sample().float().cpu().numpy().reshape(-1) - 1   # (B,)
-                done = Categorical(logits=outputs_wm.logits_ends).sample().cpu().numpy().astype(bool).reshape(-1)       # (B,)
+        if should_predict_next_obs:
+            # Sample all K obs tokens at once from (B, 1, K, obs_vocab) logits
+            obs_logits = outputs_wm.logits_observations.squeeze(1)         # (B, K, obs_vocab)
+            self.obs_tokens = Categorical(logits=obs_logits).sample()      # (B, K)
 
-            if k < self.num_observations_tokens:
-                token = Categorical(logits=outputs_wm.logits_observations).sample()
-                obs_tokens.append(token)
-
-        output_sequence = torch.cat(output_sequence, dim=1)   # (B, 1 + K, E)
-        self.obs_tokens = torch.cat(obs_tokens, dim=1)        # (B, K)
+            # Encode the sampled obs tokens for the next step
+            self.world_model.encode_and_store_obs(self.obs_tokens, self.cache)
 
         obs = self.decode_obs_tokens() if should_predict_next_obs else None
         return obs, reward, done, None
