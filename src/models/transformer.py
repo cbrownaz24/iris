@@ -28,6 +28,8 @@ class TransformerConfig:
     resid_pdrop: float
     attn_pdrop: float
 
+    d_state: int = 256
+
     @property
     def max_tokens(self):
         return self.tokens_per_block * self.max_blocks

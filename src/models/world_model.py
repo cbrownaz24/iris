@@ -7,10 +7,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from dataset import Batch
-from .kv_caching import KeysValues
 from .slicer import Embedder, Head
 from .tokenizer import Tokenizer
-from .transformer import Transformer, TransformerConfig
+from .transformer import TransformerConfig
+from .s4 import S4Backbone
 from utils import init_weights, LossWithIntermediateLosses
 
 
@@ -27,7 +27,7 @@ class WorldModel(nn.Module):
         super().__init__()
         self.obs_vocab_size, self.act_vocab_size = obs_vocab_size, act_vocab_size
         self.config = config
-        self.transformer = Transformer(config)
+        self.backbone = S4Backbone(config)
 
         all_but_last_obs_tokens_pattern = torch.ones(config.tokens_per_block)
         all_but_last_obs_tokens_pattern[-2] = 0
@@ -78,7 +78,7 @@ class WorldModel(nn.Module):
     def __repr__(self) -> str:
         return "world_model"
 
-    def forward(self, tokens: torch.LongTensor, past_keys_values: Optional[KeysValues] = None) -> WorldModelOutput:
+    def forward(self, tokens: torch.LongTensor, past_keys_values=None) -> WorldModelOutput:
 
         num_steps = tokens.size(1)  # (B, T)
         assert num_steps <= self.config.max_tokens
@@ -86,7 +86,7 @@ class WorldModel(nn.Module):
 
         sequences = self.embedder(tokens, num_steps, prev_steps) + self.pos_emb(prev_steps + torch.arange(num_steps, device=tokens.device))
 
-        x = self.transformer(sequences, past_keys_values)
+        x = self.backbone(sequences, past_keys_values)
 
         logits_observations = self.head_observations(x, num_steps=num_steps, prev_steps=prev_steps)
         logits_rewards = self.head_rewards(x, num_steps=num_steps, prev_steps=prev_steps)
