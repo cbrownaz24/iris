@@ -64,6 +64,7 @@ training:
     grad_acc_steps: 1
     max_grad_norm: 10.0
     weight_decay: 0.01
+    stu_lr: 0.0005  # set to a float (e.g. 0.001) to use a separate LR for the STU backbone
     start_after_epochs: 25
     steps_per_epoch: 200
   actor_critic:

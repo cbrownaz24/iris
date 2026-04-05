@@ -11,7 +11,7 @@ import torch.nn as nn
 from episode import Episode
 
 
-def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_names):
+def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_names, stu_lr=None):
     """Credits to https://github.com/karpathy/minGPT"""
     # separate out all parameters to those that will and won't experience regularizing weight decay
     decay = set()
@@ -40,11 +40,24 @@ def configure_optimizer(model, learning_rate, weight_decay, *blacklist_module_na
     assert len(inter_params) == 0, f"parameters {str(inter_params)} made it into both decay/no_decay sets!"
     assert len(param_dict.keys() - union_params) == 0, f"parameters {str(param_dict.keys() - union_params)} were not separated into either decay/no_decay set!"
 
-    # create the pytorch optimizer object
-    optim_groups = [
-        {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": weight_decay},
-        {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
-    ]
+    # Optionally split STU backbone params into separate LR group
+    if stu_lr is not None:
+        stu_decay = sorted([pn for pn in decay if pn.startswith('stu.')])
+        stu_no_decay = sorted([pn for pn in no_decay if pn.startswith('stu.')])
+        other_decay = sorted([pn for pn in decay if not pn.startswith('stu.')])
+        other_no_decay = sorted([pn for pn in no_decay if not pn.startswith('stu.')])
+        optim_groups = [
+            {"params": [param_dict[pn] for pn in other_decay], "weight_decay": weight_decay},
+            {"params": [param_dict[pn] for pn in other_no_decay], "weight_decay": 0.0},
+            {"params": [param_dict[pn] for pn in stu_decay], "weight_decay": weight_decay, "lr": stu_lr},
+            {"params": [param_dict[pn] for pn in stu_no_decay], "weight_decay": 0.0, "lr": stu_lr},
+        ]
+    else:
+        optim_groups = [
+            {"params": [param_dict[pn] for pn in sorted(list(decay))], "weight_decay": weight_decay},
+            {"params": [param_dict[pn] for pn in sorted(list(no_decay))], "weight_decay": 0.0},
+        ]
+
     optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate)
     return optimizer
 

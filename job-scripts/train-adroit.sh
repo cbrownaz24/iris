@@ -12,7 +12,7 @@
 
 GAME=${GAME:-AsterixNoFrameskip-v4}
 SEED=${SEED:-0}
-MAX_BLOCKS=${MAX_BLOCKS:-20}
+MAX_LEN=${MAX_LEN:-20}
 IRIS_DIR=${IRIS_DIR:-$HOME/iris-stu}
 CONDA_ENV="iris"
 
@@ -25,6 +25,7 @@ cd $IRIS_DIR
 echo "============================================"
 echo "Training IRIS on: $GAME"
 echo "Seed: $SEED"
+echo "Max Len: $MAX_LEN"
 echo "Dir: $IRIS_DIR"
 echo "Node: $(hostname)"
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
@@ -32,9 +33,9 @@ echo "Start time: $(date)"
 echo "============================================"
 
 python src/main.py \
-    world_model.max_blocks=${MAX_BLOCKS} \
     env.train.id=$GAME \
     env.test.id=$GAME \
+    world_model.max_blocks=${MAX_LEN} \
     common.device=cuda:0 \
     common.seed=$SEED \
     wandb.mode=offline
