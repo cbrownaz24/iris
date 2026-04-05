@@ -6,13 +6,14 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=gpu80
-#SBATCH --time=1-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --mail-type=begin,end,fail
 #SBATCH --mail-user=cb4835@princeton.edu
 
 GAME=${GAME:-AsterixNoFrameskip-v4}
 SEED=${SEED:-0}
 IRIS_DIR=${IRIS_DIR:-$HOME/iris}
+MAX_LEN=${MAX_LEN:-20}
 CONDA_ENV="iris"
 
 source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
@@ -33,6 +34,7 @@ echo "============================================"
 python src/main.py \
     env.train.id=$GAME \
     env.test.id=$GAME \
+    world_model.max_blocks=$MAX_LEN \
     common.device=cuda:0 \
     common.seed=$SEED \
     wandb.mode=offline
