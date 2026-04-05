@@ -14,6 +14,7 @@ set -euo pipefail
 GAME=${GAME:-AsterixNoFrameskip-v4}
 SEED=${SEED:-0}
 MAX_LEN=${MAX_LEN:-20}
+LR_SCHED=${LR_SCHED:-True}
 IRIS_DIR=${IRIS_DIR:-/home/ubuntu/iris}
 PERSISTENT_DIR=${PERSISTENT_DIR:-/home/ubuntu/iris-runs}
 CONDA_ENV="iris"
@@ -65,6 +66,7 @@ python src/main.py \
     env.train.id="$GAME" \
     env.test.id="$GAME" \
     world_model.max_blocks="$MAX_LEN" \
+    training.world_model.lr_scheduler.use="$LR_SCHED" \
     common.device=cuda:0 \
     common.seed="$SEED" \
     common.do_checkpoint=True \
