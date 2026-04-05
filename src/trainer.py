@@ -97,14 +97,14 @@ class Trainer:
             total_steps = cfg.training.world_model.lr_scheduler.total_steps
             if total_steps is None:
                 total_steps = (cfg.common.epochs - cfg.training.world_model.start_after_epochs) * cfg.training.world_model.steps_per_epoch
-            warmup = torch.optim.lr_scheduler.LinearLR(                                                                                                                               
-                optimizer, start_factor=1e-2, total_iters=cfg.training.world_model.lr_scheduler.warmup_steps
+            warmup_world_model = torch.optim.lr_scheduler.LinearLR(                                                                                                                               
+                optimizer_world_model, start_factor=1e-2, total_iters=cfg.training.world_model.lr_scheduler.warmup_steps
             )                                                                                                                                                                         
-            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(                                                                                                                      
-                optimizer, T_max=total_steps - cfg.training.world_model.lr_scheduler.warmup_steps, eta_min=1e-6
+            cosine_world_model = torch.optim.lr_scheduler.CosineAnnealingLR(                                                                                                                      
+                optimizer_world_model, T_max=total_steps - cfg.training.world_model.lr_scheduler.warmup_steps, eta_min=1e-6
             )                                                                                                                                                                         
             self.scheduler_world_model = torch.optim.lr_scheduler.SequentialLR(                                                                                                                        
-                optimizer, schedulers=[warmup, cosine], milestones=[cfg.training.world_model.lr_scheduler.warmup_steps]
+                optimizer_world_model, schedulers=[warmup_world_model, cosine_world_model], milestones=[cfg.training.world_model.lr_scheduler.warmup_steps]
             )
         else:
             self.scheduler_world_model = None

@@ -19,7 +19,7 @@ PERSISTENT_DIR=${PERSISTENT_DIR:-/home/ubuntu/iris-runs}
 CONDA_ENV="iris"
 
 # Unique run name used as the NFS backup directory
-RUN_NAME="iris-runs_seed${SEED}_ml${MAX_LEN}"
+RUN_NAME=${RUN_NAME:-"iris-runs_seed${SEED}_ml${MAX_LEN}"}
 NFS_RUN_DIR="$PERSISTENT_DIR/runs/$RUN_NAME"
 
 # ── Preflight checks ──────────────────────────────────────────
