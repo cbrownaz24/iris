@@ -12,7 +12,8 @@
 
 GAME=${GAME:-AsterixNoFrameskip-v4}
 SEED=${SEED:-0}
-IRIS_DIR=${IRIS_DIR:-$HOME/iris}
+IRIS_DIR=${IRIS_DIR:-$HOME/iris-mamba2}
+MAX_LEN=${MAX_LEN:-20}
 CONDA_ENV="iris"
 
 source /usr/licensed/anaconda3/2024.2/etc/profile.d/conda.sh
@@ -24,6 +25,7 @@ cd $IRIS_DIR
 echo "============================================"
 echo "Training IRIS on: $GAME"
 echo "Seed: $SEED"
+echo "Max Len: $MAX_LEN"
 echo "Dir: $IRIS_DIR"
 echo "Node: $(hostname)"
 echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
@@ -33,6 +35,7 @@ echo "============================================"
 python src/main.py \
     env.train.id=$GAME \
     env.test.id=$GAME \
+    world_model.max_blocks=$MAX_LEN \
     common.device=cuda:0 \
     common.seed=$SEED \
     wandb.mode=offline
