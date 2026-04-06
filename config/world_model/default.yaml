@@ -3,25 +3,26 @@ tokens_per_block: 17
 max_blocks: 20
 attention: 'causal'
 
-# Mini transformer encoder (within-block spatial attention over 16 obs tokens)
-num_layers: 2
-num_heads: 4
+# Working dimension (codebook 512 projected to this)
 embed_dim: 256
 
+# Mini transformer encoder (within-block spatial attention, CLS output)
+num_encoder_layers: 2
+num_encoder_heads: 4
+num_cls_tokens: 2
+
 # STU backbone (across-block temporal modeling)
-# MLP_in: (stu_obs_dim + num_actions) -> stu_dim    [Koopman lift]
-# STU:    stu_dim -> stu_dim
-# MLP_out: stu_dim -> temporal_state_dim             [Koopman project]
-stu_obs_dim: 256
-stu_dim: 512
-temporal_state_dim: 256
+# MLP_in:  (num_cls * embed_dim + num_actions) -> stu_input_dim  [Koopman lift]
+# STU:     M_k: stu_input_dim -> stu_output_dim
+# MLP_out: stu_output_dim -> embed_dim                           [compress]
+stu_input_dim: 656
+stu_output_dim: 324
 num_stu_layers: 1
 num_filters: 16
 
-# Cross-attention decoder (z_t tokens attend to temporal_state)
+# Decoder transformer (full self-attention, predicts next frame)
 num_decoder_layers: 2
 num_decoder_heads: 4
-num_context_tokens: 4
 
 # Dropout
 embed_pdrop: 0.1

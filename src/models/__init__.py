@@ -1,2 +1,2 @@
-from .transformer import MiniTransformerEncoder, CrossAttentionDecoder, TransformerConfig
+from .transformer import MiniTransformerEncoder, DecoderTransformer, TransformerConfig
 from .stu import STUBackbone

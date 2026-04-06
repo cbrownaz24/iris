@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from dataset import Batch
 from .tokenizer import Tokenizer
-from .transformer import TransformerConfig, MiniTransformerEncoder, CrossAttentionDecoder
+from .transformer import TransformerConfig, MiniTransformerEncoder, DecoderTransformer
 from .stu import STUBackbone
 from utils import init_weights, LossWithIntermediateLosses
 
@@ -26,12 +26,12 @@ class STUCache:
     """
     Cache for incremental generation with the mini-transformer + STU architecture.
 
-    Stores projected block vectors (stu_dim) so STU can be re-run over the full
+    Stores projected block vectors (stu_input_dim) so STU can be re-run over the full
     history each step.  Also holds the current observation encoding and embedded
     tokens waiting to be paired with an action.
     """
 
-    def __init__(self, n: int, max_blocks: int, stu_dim: int,
+    def __init__(self, n: int, max_blocks: int, stu_input_dim: int,
                  tokens_per_block: int, embed_dim: int, num_obs_tokens: int,
                  device: torch.device) -> None:
         self.n = n
@@ -40,12 +40,12 @@ class STUCache:
         self.device = device
 
         # Projected block inputs for STU (filled as blocks complete)
-        self.block_inputs = torch.zeros(n, max_blocks, stu_dim, device=device)
+        self.block_inputs = torch.zeros(n, max_blocks, stu_input_dim, device=device)
         self.num_blocks = 0
 
         # Obs encoding from the mini transformer, waiting for an action
-        self.pending_obs_enc: Optional[torch.Tensor] = None   # (B, stu_obs_dim)
-        # Raw embedded obs tokens for cross-attention decoder
+        self.pending_obs_enc: Optional[torch.Tensor] = None   # (B, num_cls * embed_dim)
+        # Projected obs token embeddings for decoder
         self.pending_obs_emb: Optional[torch.Tensor] = None   # (B, K, embed_dim)
 
     @property
@@ -68,7 +68,7 @@ class STUCache:
             self.pending_obs_emb = self.pending_obs_emb[mask]
 
     def add_block(self, block_vec: torch.Tensor) -> None:
-        """Store a projected block vector (B, stu_dim)."""
+        """Store a projected block vector (B, stu_input_dim)."""
         self.block_inputs[:, self.num_blocks] = block_vec
         self.num_blocks += 1
 
@@ -81,76 +81,76 @@ class WorldModel(nn.Module):
 
         K = config.tokens_per_block - 1   # obs tokens per block (16)
         self.num_obs_tokens = K
-        d_stu = config.stu_dim
-        d_temporal = config.temporal_state_dim
+        d = config.embed_dim
+        d_in = config.stu_input_dim
+        d_out = config.stu_output_dim
 
         # ---- token embedding ------------------------------------------------
-        self.obs_embed = nn.Embedding(obs_vocab_size, config.embed_dim)
+        self.obs_embed = nn.Embedding(obs_vocab_size, d)
 
-        # ---- mini transformer encoder: (B, K, embed_dim) -> (B, stu_obs_dim) -
+        # ---- mini transformer encoder (CLS output) -------------------------
         self.mini_encoder = MiniTransformerEncoder(
-            num_layers=config.num_layers,
-            num_heads=config.num_heads,
-            embed_dim=config.embed_dim,
-            output_dim=config.stu_obs_dim,
-            num_tokens=K,
+            num_layers=config.num_encoder_layers,
+            num_heads=config.num_encoder_heads,
+            embed_dim=d,
+            num_obs_tokens=K,
+            num_cls_tokens=config.num_cls_tokens,
             dropout=config.attn_pdrop,
         )
 
-        # ---- MLP_in: (stu_obs_dim + num_actions) -> stu_dim -----------------
-        stu_input_dim = config.stu_obs_dim + act_vocab_size
+        # ---- MLP_in: (num_cls * embed_dim + num_actions) -> stu_input_dim  [Koopman lift]
+        mlp_in_dim = config.num_cls_tokens * d + act_vocab_size
         self.mlp_in = nn.Sequential(
-            nn.Linear(stu_input_dim, d_stu),
+            nn.Linear(mlp_in_dim, d_in),
             nn.GELU(),
-            nn.Linear(d_stu, d_stu),
+            nn.Linear(d_in, d_in),
         )
 
-        # ---- block-level positional embedding -------------------------------
-        self.block_pos_emb = nn.Embedding(config.max_blocks, d_stu)
-
-        # ---- STU backbone ---------------------------------------------------
+        # ---- STU backbone: stu_input_dim -> stu_output_dim ------------------
         self.stu = STUBackbone(
-            d_model=d_stu,
+            d_in=d_in,
+            d_out=d_out,
             num_layers=config.num_stu_layers,
             num_filters=config.num_filters,
             max_seq_len=config.max_blocks,
-            dropout=config.resid_pdrop,
         )
 
-        # ---- MLP_out: stu_dim -> temporal_state_dim --------------------------
+        # ---- MLP_out: stu_output_dim -> embed_dim  [compress] ---------------
         self.mlp_out = nn.Sequential(
-            nn.Linear(d_stu, d_stu),
+            nn.Linear(d_out, d_out),
             nn.GELU(),
-            nn.Linear(d_stu, d_temporal),
+            nn.Linear(d_out, d),
         )
 
-        # ---- cross-attention decoder: z_t attends to temporal_state ----------
-        self.cross_attn_decoder = CrossAttentionDecoder(
-            embed_dim=config.embed_dim,
-            temporal_state_dim=d_temporal,
-            num_heads=config.num_decoder_heads,
+        # ---- action embedding for decoder -----------------------------------
+        self.act_embed = nn.Embedding(act_vocab_size, d)
+
+        # ---- decoder transformer: [16 obs + 1 temporal + 1 action] ----------
+        self.decoder = DecoderTransformer(
             num_layers=config.num_decoder_layers,
-            num_context_tokens=config.num_context_tokens,
+            num_heads=config.num_decoder_heads,
+            embed_dim=d,
+            num_tokens=K + 2,
             dropout=config.attn_pdrop,
         )
 
         # ---- per-token observation head (embed_dim -> obs_vocab_size) -------
         self.head_observations = nn.Sequential(
-            nn.Linear(config.embed_dim, config.embed_dim),
+            nn.Linear(d, d),
             nn.ReLU(),
-            nn.Linear(config.embed_dim, obs_vocab_size),
+            nn.Linear(d, obs_vocab_size),
         )
 
-        # ---- reward / end heads (from pooled cross-attention output) --------
+        # ---- reward / end heads (from pooled decoder output) ----------------
         self.head_rewards = nn.Sequential(
-            nn.Linear(config.embed_dim, config.embed_dim),
+            nn.Linear(d, d),
             nn.ReLU(),
-            nn.Linear(config.embed_dim, 3),
+            nn.Linear(d, 3),
         )
         self.head_ends = nn.Sequential(
-            nn.Linear(config.embed_dim, config.embed_dim),
+            nn.Linear(d, d),
             nn.ReLU(),
-            nn.Linear(config.embed_dim, 2),
+            nn.Linear(d, 2),
         )
 
         self.apply(init_weights)
@@ -162,20 +162,21 @@ class WorldModel(nn.Module):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _embed_obs(self, obs_tokens: torch.LongTensor) -> torch.Tensor:
-        """Embed observation tokens. (B, K) -> (B, K, embed_dim)"""
+    def _embed_and_project_obs(self, obs_tokens: torch.LongTensor) -> torch.Tensor:
+        """Embed observation tokens.  (...) -> (..., embed_dim)"""
         return self.obs_embed(obs_tokens)
 
     def _encode_obs(self, obs_emb: torch.Tensor) -> torch.Tensor:
         """
-        Encode embedded observation tokens through the mini transformer.
+        Encode observation tokens through the mini transformer.
 
         Args:
             obs_emb: (B, K, embed_dim)
         Returns:
-            (B, stu_obs_dim) frame_summary vector
+            (B, num_cls * embed_dim) flattened CLS vector(s)
         """
-        return self.mini_encoder(obs_emb)
+        cls = self.mini_encoder(obs_emb)                          # (B, num_cls, embed_dim)
+        return cls.flatten(1)                                      # (B, num_cls * embed_dim)
 
     def _encode_obs_batched(self, obs_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -184,34 +185,35 @@ class WorldModel(nn.Module):
         Args:
             obs_emb: (B, L, K, embed_dim)
         Returns:
-            (B, L, stu_obs_dim) frame_summary vectors
+            (B, L, num_cls * embed_dim) flattened CLS vectors
         """
         B, L, K, E = obs_emb.shape
-        obs_emb_flat = obs_emb.reshape(B * L, K, E)
-        obs_enc = self.mini_encoder(obs_emb_flat)                  # (B*L, stu_obs_dim)
-        return obs_enc.view(B, L, -1)                              # (B, L, stu_obs_dim)
+        cls = self.mini_encoder(obs_emb.reshape(B * L, K, E))    # (B*L, num_cls, embed_dim)
+        return cls.flatten(1).view(B, L, -1)                       # (B, L, num_cls * embed_dim)
 
     def _build_block_inputs(self, obs_enc: torch.Tensor, act_tokens: torch.LongTensor) -> torch.Tensor:
         """
-        Combine obs encodings with one-hot actions and project through MLP_in.
+        Combine CLS encodings with one-hot actions and lift through MLP_in.
 
         Args:
-            obs_enc:    (B, L, stu_obs_dim)
+            obs_enc:    (B, L, num_cls * embed_dim)
             act_tokens: (B, L) action token ids
         Returns:
-            (B, L, stu_dim) projected block vectors
+            (B, L, stu_input_dim) lifted block vectors
         """
-        act_onehot = F.one_hot(act_tokens, self.act_vocab_size).float()   # (B, L, num_actions)
-        block_input = torch.cat([obs_enc, act_onehot], dim=-1)            # (B, L, stu_obs_dim + num_actions)
-        return self.mlp_in(block_input)                                    # (B, L, stu_dim)
+        act_onehot = F.one_hot(act_tokens, self.act_vocab_size).float()
+        block_input = torch.cat([obs_enc, act_onehot], dim=-1)
+        return self.mlp_in(block_input)
 
-    def _decode_with_cross_attn(self, temporal_state: torch.Tensor, obs_emb: torch.Tensor) -> tuple:
+    def _decode(self, obs_emb: torch.Tensor, temporal: torch.Tensor,
+                act_tokens: torch.LongTensor) -> tuple:
         """
-        Decode predictions via cross-attention: z_t tokens attend to temporal_state.
+        Run decoder transformer and produce logits.
 
         Args:
-            temporal_state: (B, L, temporal_state_dim)
-            obs_emb:        (B, L, K, embed_dim)
+            obs_emb:    (B, L, K, embed_dim) — projected obs token embeddings
+            temporal:   (B, L, embed_dim)    — compressed STU output
+            act_tokens: (B, L)               — action token ids
         Returns:
             logits_obs: (B, L, K, obs_vocab_size)
             logits_rew: (B, L, 3)
@@ -219,26 +221,30 @@ class WorldModel(nn.Module):
         """
         B, L, K, E = obs_emb.shape
 
-        # Flatten batch and time for cross-attention
-        ts_flat = temporal_state.reshape(B * L, -1)        # (B*L, temporal_state_dim)
-        emb_flat = obs_emb.reshape(B * L, K, E)            # (B*L, K, embed_dim)
+        act_emb = self.act_embed(act_tokens)                      # (B, L, embed_dim)
 
-        decoded = self.cross_attn_decoder(emb_flat, ts_flat)  # (B*L, K, embed_dim)
-        decoded = decoded.view(B, L, K, E)
+        # Flatten batch and time
+        obs_flat = obs_emb.reshape(B * L, K, E)                   # (B*L, K, E)
+        temp_flat = temporal.reshape(B * L, 1, E)                  # (B*L, 1, E)
+        act_flat = act_emb.reshape(B * L, 1, E)                   # (B*L, 1, E)
 
-        # Per-token observation logits
-        logits_obs = self.head_observations(decoded)          # (B, L, K, obs_vocab)
+        dec_in = torch.cat([obs_flat, temp_flat, act_flat], dim=1) # (B*L, K+2, E)
+        dec_out = self.decoder(dec_in)                             # (B*L, K+2, E)
 
-        # Pool over K tokens for reward / terminal heads
-        pooled = decoded.mean(dim=2)                          # (B, L, embed_dim)
-        logits_rew = self.head_rewards(pooled)                # (B, L, 3)
-        logits_end = self.head_ends(pooled)                   # (B, L, 2)
+        # Obs predictions from the first K positions
+        obs_decoded = dec_out[:, :K].view(B, L, K, E)
+        logits_obs = self.head_observations(obs_decoded)
+
+        # Pool obs positions for reward / terminal
+        pooled = obs_decoded.mean(dim=2)                           # (B, L, E)
+        logits_rew = self.head_rewards(pooled)
+        logits_end = self.head_ends(pooled)
 
         return logits_obs, logits_rew, logits_end
 
     def generate_empty_cache(self, n: int) -> STUCache:
         device = next(self.parameters()).device
-        return STUCache(n, self.config.max_blocks, self.config.stu_dim,
+        return STUCache(n, self.config.max_blocks, self.config.stu_input_dim,
                         self.config.tokens_per_block, self.config.embed_dim,
                         self.num_obs_tokens, device)
 
@@ -256,32 +262,30 @@ class WorldModel(nn.Module):
         L = T // tpb
         K = self.num_obs_tokens
 
-        block_tokens = tokens.view(B, L, tpb)                             # (B, L, K+1)
-        obs_tokens = block_tokens[:, :, :K]                                # (B, L, K)
-        act_tokens = block_tokens[:, :, K]                                 # (B, L)
+        block_tokens = tokens.view(B, L, tpb)                     # (B, L, K+1)
+        obs_tokens = block_tokens[:, :, :K]                        # (B, L, K)
+        act_tokens = block_tokens[:, :, K]                         # (B, L)
 
-        # Embed observation tokens (kept for cross-attention decoder)
-        obs_emb = self.obs_embed(obs_tokens)                               # (B, L, K, embed_dim)
+        # Embed and project obs tokens (kept for decoder)
+        obs_emb = self._embed_and_project_obs(obs_tokens)          # (B, L, K, embed_dim)
 
-        # Mini transformer: encode each block's obs tokens -> frame_summary
-        obs_enc = self._encode_obs_batched(obs_emb)                        # (B, L, stu_obs_dim)
+        # Mini transformer: CLS per block
+        obs_enc = self._encode_obs_batched(obs_emb)                # (B, L, embed_dim)
 
-        # Build block inputs (MLP_in) and add positional embeddings
-        block_vec = self._build_block_inputs(obs_enc, act_tokens)          # (B, L, stu_dim)
-        block_vec = block_vec + self.block_pos_emb(
-            torch.arange(L, device=tokens.device))
+        # Koopman lift: concat CLS + action, project to stu_input_dim
+        block_vec = self._build_block_inputs(obs_enc, act_tokens)  # (B, L, stu_input_dim)
 
         # STU temporal backbone
-        stu_out = self.stu(block_vec)                                      # (B, L, stu_dim)
+        stu_out = self.stu(block_vec)                              # (B, L, stu_output_dim)
 
-        # MLP_out: stu_dim -> temporal_state_dim
-        temporal_state = self.mlp_out(stu_out)                             # (B, L, temporal_state_dim)
+        # Compress back to embed_dim
+        temporal = self.mlp_out(stu_out)                           # (B, L, embed_dim)
 
-        # Cross-attention decoder: z_t attends to temporal_state
-        logits_obs, logits_rew, logits_end = self._decode_with_cross_attn(
-            temporal_state, obs_emb)
+        # Decoder: [obs_emb, temporal, action] -> predictions
+        logits_obs, logits_rew, logits_end = self._decode(
+            obs_emb, temporal, act_tokens)
 
-        return WorldModelOutput(temporal_state, logits_obs, logits_rew, logits_end)
+        return WorldModelOutput(temporal, logits_obs, logits_rew, logits_end)
 
     # ------------------------------------------------------------------
     # Generation helpers (called by WorldModelEnv)
@@ -289,9 +293,9 @@ class WorldModel(nn.Module):
 
     def encode_and_store_obs(self, obs_tokens: torch.LongTensor, cache: STUCache) -> None:
         """Encode observation tokens and store both embeddings and encoding in cache."""
-        obs_emb = self._embed_obs(obs_tokens)                              # (B, K, embed_dim)
+        obs_emb = self._embed_and_project_obs(obs_tokens)          # (B, K, embed_dim)
         cache.pending_obs_emb = obs_emb
-        cache.pending_obs_enc = self._encode_obs(obs_emb)                  # (B, stu_obs_dim)
+        cache.pending_obs_enc = self._encode_obs(obs_emb)          # (B, embed_dim)
 
     def generate_step(self, action: torch.LongTensor, cache: STUCache) -> WorldModelOutput:
         """
@@ -305,32 +309,30 @@ class WorldModel(nn.Module):
         Returns:
             WorldModelOutput with predictions (logits for K obs tokens, reward, end)
         """
-        action = action.view(-1)                                           # (B,)
+        action = action.view(-1)                                   # (B,)
         B = action.size(0)
 
         # Build this block's input via MLP_in
-        obs_enc = cache.pending_obs_enc.unsqueeze(1)                       # (B, 1, stu_obs_dim)
-        act_tokens = action.unsqueeze(1)                                   # (B, 1)
-        block_vec = self._build_block_inputs(obs_enc, act_tokens).squeeze(1)  # (B, stu_dim)
+        obs_enc = cache.pending_obs_enc.unsqueeze(1)               # (B, 1, embed_dim)
+        act_tokens = action.unsqueeze(1)                           # (B, 1)
+        block_vec = self._build_block_inputs(obs_enc, act_tokens).squeeze(1)  # (B, stu_input_dim)
 
-        # Add positional embedding and store in cache
-        block_vec = block_vec + self.block_pos_emb.weight[cache.num_blocks]
         cache.add_block(block_vec)
 
         # Run STU over all blocks
-        stu_input = cache.block_inputs[:, :cache.num_blocks]               # (B, n_blk, stu_dim)
-        stu_out = self.stu(stu_input)                                      # (B, n_blk, stu_dim)
-        last_stu = stu_out[:, -1:]                                         # (B, 1, stu_dim)
+        stu_input = cache.block_inputs[:, :cache.num_blocks]       # (B, n_blk, stu_input_dim)
+        stu_out = self.stu(stu_input)                              # (B, n_blk, stu_output_dim)
+        last_stu = stu_out[:, -1:]                                 # (B, 1, stu_output_dim)
 
-        # MLP_out -> temporal_state
-        temporal_state = self.mlp_out(last_stu)                            # (B, 1, temporal_state_dim)
+        # Compress -> temporal
+        temporal = self.mlp_out(last_stu)                          # (B, 1, embed_dim)
 
-        # Cross-attention decoder with current obs embeddings
-        obs_emb = cache.pending_obs_emb.unsqueeze(1)                       # (B, 1, K, embed_dim)
-        logits_obs, logits_rew, logits_end = self._decode_with_cross_attn(
-            temporal_state, obs_emb)
+        # Decoder with current obs embeddings and action
+        obs_emb = cache.pending_obs_emb.unsqueeze(1)               # (B, 1, K, embed_dim)
+        logits_obs, logits_rew, logits_end = self._decode(
+            obs_emb, temporal, act_tokens)
 
-        return WorldModelOutput(temporal_state, logits_obs, logits_rew, logits_end)
+        return WorldModelOutput(temporal, logits_obs, logits_rew, logits_end)
 
     # ------------------------------------------------------------------
     # Loss

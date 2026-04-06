@@ -14,7 +14,6 @@ set -euo pipefail
 GAME=${GAME:-AsterixNoFrameskip-v4}
 SEED=${SEED:-0}
 MAX_LEN=${MAX_LEN:-20}
-STU_DIM=${STU_DIM:-512}
 LR_SCHED=${LR_SCHED:-True}
 IRIS_DIR=${IRIS_DIR:-/home/ubuntu/iris}
 PERSISTENT_DIR=${PERSISTENT_DIR:-/home/ubuntu/iris-runs}
@@ -67,7 +66,6 @@ python src/main.py \
     env.train.id="$GAME" \
     env.test.id="$GAME" \
     world_model.max_blocks="$MAX_LEN" \
-    world_model.stu_dim="$STU_DIM" \
     training.world_model.lr_scheduler.use="$LR_SCHED" \
     common.device=cuda:0 \
     common.seed="$SEED" \

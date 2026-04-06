@@ -25,73 +25,54 @@ class STULayer(nn.Module):
     For each of k learned filters (Hankel eigenvectors phi_i):
         c_i[t] = sum_{s<=t} phi_i[s] * x[s]       (causal cumulative projection)
         y[t]  += phi_i[t] * M_i(c_i[t])            (modulate and sum)
+
+    M_i maps from d_in to d_out, allowing rectangular projections.
     """
 
-    def __init__(self, d_model: int, num_filters: int, max_seq_len: int, dropout: float = 0.1) -> None:
+    def __init__(self, d_in: int, d_out: int, num_filters: int, max_seq_len: int) -> None:
         super().__init__()
         self.num_filters = num_filters
 
         filters = compute_hankel_eigenvectors(max_seq_len, num_filters)
         self.register_buffer('filters', filters)  # (max_seq_len, num_filters)
 
-        # One linear per filter (nn.Linear so configure_optimizer classifies the weight)
+        # One linear per filter: d_in -> d_out
         self.M = nn.ModuleList([
-            nn.Linear(d_model, d_model, bias=False) for _ in range(num_filters)
+            nn.Linear(d_in, d_out, bias=False) for _ in range(num_filters)
         ])
-        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, T, D) -> (B, T, D), causal."""
         B, T, D = x.shape
-        phi = self.filters[:T]  # (T, num_filters)
+        phi = self.filters[:T]                              # (T, num_filters)
 
-        output = torch.zeros_like(x)
-        for k in range(self.num_filters):
-            phi_k = phi[:, k].view(1, T, 1)                 # (1, T, 1)
-            cumsum_k = torch.cumsum(phi_k * x, dim=1)       # (B, T, D)
-            output = output + phi_k * self.M[k](cumsum_k)   # (B, T, D)
+        # Compute all cumulative projections at once
+        phi_expanded = phi.unsqueeze(0).unsqueeze(-1)       # (1, T, num_filters, 1)
+        x_expanded = x.unsqueeze(2)                          # (B, T, 1, D)
+        weighted = phi_expanded * x_expanded                 # (B, T, num_filters, D)
+        cumsum = torch.cumsum(weighted, dim=1)               # (B, T, num_filters, D)
 
-        return self.dropout(output)
+        # Apply all M_k projections — stack weights into one matmul
+        # M_weights: (num_filters, d_out, d_in)
+        M_weights = torch.stack([self.M[k].weight for k in range(self.num_filters)])
+        modulated = torch.einsum('btnf,nof->btno', cumsum, M_weights)  # (B, T, num_filters, d_out)
 
-
-class STUBlock(nn.Module):
-    """Pre-norm STU + MLP block with residual connections."""
-
-    def __init__(self, d_model: int, num_filters: int, max_seq_len: int, dropout: float = 0.1) -> None:
-        super().__init__()
-        self.ln1 = nn.LayerNorm(d_model)
-        self.stu = STULayer(d_model, num_filters, max_seq_len, dropout)
-        self.ln2 = nn.LayerNorm(d_model)
-        self.mlp = nn.Sequential(
-            nn.Linear(d_model, 4 * d_model),
-            nn.GELU(),
-            nn.Linear(4 * d_model, d_model),
-            nn.Dropout(dropout),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.stu(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
-        return x
+        output = (phi_expanded * modulated).sum(dim=2)       # (B, T, d_out)
+        return output
 
 
 class STUBackbone(nn.Module):
-    """Stack of STU blocks, drop-in replacement for the Transformer backbone."""
+    """Stack of STU layers."""
 
-    def __init__(self, d_model: int, num_layers: int, num_filters: int,
-                 max_seq_len: int, dropout: float = 0.1) -> None:
+    def __init__(self, d_in: int, d_out: int, num_layers: int, num_filters: int,
+                 max_seq_len: int) -> None:
         super().__init__()
-        self.d_model = d_model
-        self.drop = nn.Dropout(dropout)
-        self.blocks = nn.ModuleList([
-            STUBlock(d_model, num_filters, max_seq_len, dropout)
+        self.layers = nn.ModuleList([
+            STULayer(d_in, d_out, num_filters, max_seq_len)
             for _ in range(num_layers)
         ])
-        self.ln_f = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, T, D) -> (B, T, D)"""
-        x = self.drop(x)
-        for block in self.blocks:
-            x = block(x)
-        return self.ln_f(x)
+        """x: (B, T, d_in) -> (B, T, d_out)"""
+        for layer in self.layers:
+            x = layer(x)
+        return x
