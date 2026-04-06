@@ -102,8 +102,10 @@ class MiniTransformerEncoder(nn.Module):
     """
 
     def __init__(self, num_layers: int, num_heads: int, embed_dim: int,
-                 output_dim: int, num_tokens: int, dropout: float = 0.1) -> None:
+                 output_dim: int, num_tokens: int, dropout: float = 0.1,
+                 pool: bool = True) -> None:
         super().__init__()
+        self.pool = pool
         self.pos_emb = nn.Embedding(num_tokens, embed_dim)
         self.drop = nn.Dropout(dropout)
         self.blocks = nn.ModuleList([
@@ -117,7 +119,8 @@ class MiniTransformerEncoder(nn.Module):
         Args:
             x: (B, K, embed_dim) — embedded observation tokens
         Returns:
-            (B, output_dim) — pooled observation vector
+            If pool=True:  (B, output_dim) — pooled observation vector
+            If pool=False: (B, K, output_dim) — per-token output
         """
         B, K, E = x.shape
         x = x + self.pos_emb(torch.arange(K, device=x.device))
@@ -125,8 +128,9 @@ class MiniTransformerEncoder(nn.Module):
         for block in self.blocks:
             x = block(x)
         x = self.ln_f(x)
-        x = x.mean(dim=1)            # mean pool over K tokens -> (B, embed_dim)
-        return self.pool_proj(x)      # (B, output_dim)
+        if self.pool:
+            x = x.mean(dim=1)        # mean pool over K tokens -> (B, embed_dim)
+        return self.pool_proj(x)      # (B, output_dim) or (B, K, output_dim)
 
 
 # ======================================================================

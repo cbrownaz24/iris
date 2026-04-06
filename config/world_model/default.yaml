@@ -14,7 +14,7 @@ embed_dim: 256
 # MLP_out: stu_dim -> temporal_state_dim             [Koopman project]
 stu_obs_dim: 256
 stu_dim: 512
-temporal_state_dim: 256
+temporal_state_dim: 512
 num_stu_layers: 1
 num_filters: 16
 
